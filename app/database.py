@@ -6,7 +6,7 @@ import os
 # Use DATABASE_URL from Render, or fallback to your Postgres URL
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://raksha_360_user:IXSbIC6uSyPwpUgHc2toiijhMwYFuQle@dpg-d2rc8mv5r7bs73bru9ig-a/raksha_360"
+    "ppostgresql://raksha_360_iyyc_user:cnmxNVfakZunRQGmY94OIog0rDxyGpZp@dpg-d2rfn1euk2gs7389acgg-a.singapore-postgres.render.com/raksha_360_iyyc"
 )
 
 # Create engine
