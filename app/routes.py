@@ -158,3 +158,18 @@ def create_prescription(patient: str, medicine: str, db: Session = Depends(get_d
     db.commit()
     db.refresh(prescription)
     return {"msg": "Prescription added", "prescription_id": prescription.id}
+
+
+@router.delete("/appointments/{appointment_id}")
+def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), patient=Depends(get_current_patient)):
+    appointment = db.query(models.Appointment).filter(
+        models.Appointment.id == appointment_id,
+        models.Appointment.patient_id == patient.id  # ✅ ensure only their own appt
+    ).first()
+
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    db.delete(appointment)
+    db.commit()
+    return {"msg": "Appointment cancelled"}
