@@ -7,7 +7,7 @@ from app.database import SessionLocal, Base, engine
 from app import models
 from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 
-from app.schemas import DoctorSignupRequest,PatientSignupRequest,LoginRequest
+from .schemas import DoctorSignupRequest, PatientSignupRequest, LoginRequest
 
 Base.metadata.create_all(bind=engine)
 
