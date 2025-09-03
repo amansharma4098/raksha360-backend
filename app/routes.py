@@ -1,16 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
 
 from app.database import SessionLocal, Base, engine
 from app import models
-from app.auth import hash_password, verify_password, create_access_token
+from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 
 Base.metadata.create_all(bind=engine)
 
 router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/patient/login")  # default, we’ll support doctor too
-
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/patient/login")
 
 # DB Session Dependency
 def get_db():
@@ -19,7 +19,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
 
 # ---------------------- AUTH ---------------------- #
 @router.post("/auth/doctor/signup")
@@ -42,12 +41,12 @@ def doctor_signup(name: str, email: str, password: str, specialization: str, deg
 
 
 @router.post("/auth/doctor/login")
-def doctor_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    doctor = db.query(models.Doctor).filter(models.Doctor.email == form_data.username).first()
-    if not doctor or not verify_password(form_data.password, doctor.password_hash):
+def doctor_login(email: str = Body(...), password: str = Body(...), db: Session = Depends(get_db)):
+    doctor = db.query(models.Doctor).filter(models.Doctor.email == email).first()
+    if not doctor or not verify_password(password, doctor.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token({"sub": doctor.email, "role": "doctor"})
-    return {"access_token": token, "token_type": "bearer"}
+    return {"token": token}
 
 
 @router.post("/auth/patient/signup")
@@ -69,40 +68,50 @@ def patient_signup(name: str, email: str, password: str, city: str, age: int, ge
 
 
 @router.post("/auth/patient/login")
-def patient_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter(models.Patient.email == form_data.username).first()
-    if not patient or not verify_password(form_data.password, patient.password_hash):
+def patient_login(email: str = Body(...), password: str = Body(...), db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.email == email).first()
+    if not patient or not verify_password(password, patient.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token({"sub": patient.email, "role": "patient"})
-    return {"access_token": token, "token_type": "bearer"}
+    return {"token": token}
 
+# ---------------------- Helpers ---------------------- #
+def get_current_patient(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        patient = db.query(models.Patient).filter(models.Patient.email == email).first()
+        if not patient:
+            raise HTTPException(status_code=401, detail="Patient not found")
+        return patient
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 # ---------------------- DOCTORS ---------------------- #
 @router.get("/doctors")
-def search_doctors(city: str = None, degree: str = None, db: Session = Depends(get_db)):
+def search_doctors(city: str = None, specialization: str = None, degree: str = None, db: Session = Depends(get_db)):
     query = db.query(models.Doctor)
     if city:
         query = query.filter(models.Doctor.city.ilike(f"%{city}%"))
+    if specialization:
+        query = query.filter(models.Doctor.specialization.ilike(f"%{specialization}%"))
     if degree:
         query = query.filter(models.Doctor.degree.ilike(f"%{degree}%"))
     return query.all()
 
-
 # ---------------------- APPOINTMENTS ---------------------- #
 @router.post("/appointments")
-def book_appointment(patient_id: int, doctor_id: int, date: str, db: Session = Depends(get_db)):
-    appointment = models.Appointment(patient_id=patient_id, doctor_id=doctor_id, date=date, status="booked")
+def book_appointment(doctor_id: int = Body(...), date: str = Body(...), time: str = Body(...), db: Session = Depends(get_db), patient=Depends(get_current_patient)):
+    appointment = models.Appointment(
+        patient_id=patient.id, doctor_id=doctor_id, date=f"{date} {time}", status="booked"
+    )
     db.add(appointment)
     db.commit()
     db.refresh(appointment)
     return {"msg": "Appointment booked", "appointment_id": appointment.id}
 
-
 @router.get("/appointments")
-def get_appointments(patient_id: int = None, doctor_id: int = None, db: Session = Depends(get_db)):
-    query = db.query(models.Appointment)
-    if patient_id:
-        query = query.filter(models.Appointment.patient_id == patient_id)
-    if doctor_id:
-        query = query.filter(models.Appointment.doctor_id == doctor_id)
-    return query.all()
+def get_appointments(db: Session = Depends(get_db), patient=Depends(get_current_patient)):
+    return db.query(models.Appointment).filter(models.Appointment.patient_id == patient.id).all()
