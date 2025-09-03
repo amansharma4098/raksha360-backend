@@ -43,14 +43,17 @@ def doctor_signup(payload: DoctorSignupRequest, db: Session = Depends(get_db)):
     db.refresh(doctor)
     return {"msg": "Doctor registered", "doctor_id": doctor.id}
 
-
 @router.post("/auth/doctor/login")
 def doctor_login(payload: LoginRequest, db: Session = Depends(get_db)):
     doctor = db.query(models.Doctor).filter(models.Doctor.email == payload.email).first()
     if not doctor or not verify_password(payload.password, doctor.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token({"sub": doctor.email, "role": "doctor"})
-    return {"token": token}
+    return {
+        "token": token,
+        "doctor_id": doctor.id,  
+        "name": doctor.name       
+    }
 
 
 # ---------------------- PATIENT AUTH ---------------------- #
@@ -173,3 +176,5 @@ def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), patie
     db.delete(appointment)
     db.commit()
     return {"msg": "Appointment cancelled"}
+
+
