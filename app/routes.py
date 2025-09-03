@@ -115,3 +115,33 @@ def book_appointment(doctor_id: int = Body(...), date: str = Body(...), time: st
 @router.get("/appointments")
 def get_appointments(db: Session = Depends(get_db), patient=Depends(get_current_patient)):
     return db.query(models.Appointment).filter(models.Appointment.patient_id == patient.id).all()
+
+
+@router.get("/patients/{patient_id}")
+def get_patient(patient_id: int, db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return {
+        "id": patient.id,
+        "name": patient.name,
+        "email": patient.email,
+        "city": patient.city,
+        "age": patient.age,
+        "gender": patient.gender,
+    }
+
+
+@router.post("/prescriptions")
+def create_prescription(patient: str = Body(...), medicine: str = Body(...), db: Session = Depends(get_db)):
+    # Here patient is currently passed as a name from frontend
+    pat = db.query(models.Patient).filter(models.Patient.name.ilike(f"%{patient}%")).first()
+    if not pat:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # TODO: get doctor_id from token instead of hardcoding
+    prescription = models.Prescription(patient_id=pat.id, doctor_id=1, medicine=medicine)
+    db.add(prescription)
+    db.commit()
+    db.refresh(prescription)
+    return {"msg": "Prescription added", "prescription_id": prescription.id}

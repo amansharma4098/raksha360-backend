@@ -44,3 +44,15 @@ class Appointment(Base):
 
     doctor = relationship("Doctor", back_populates="appointments")
     patient = relationship("Patient", back_populates="appointments")
+
+
+class Prescription(Base):
+    __tablename__ = "prescriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"))
+    doctor_id = Column(Integer, ForeignKey("doctors.id"))
+    medicine = Column(String, nullable=False)
+    date = Column(String, default=str(datetime.datetime.utcnow()))
+
+    patient = relationship("Patient")
+    doctor = relationship("Doctor")
