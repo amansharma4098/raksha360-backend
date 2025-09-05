@@ -1,47 +1,41 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+from datetime import date, time
 
 # ---------------- Doctor ---------------- #
 class DoctorSignupRequest(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
     specialization: str
     degree: str
     city: str
     contact: str
 
-
 # ---------------- Patient ---------------- #
 class PatientSignupRequest(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
     city: str
     age: int
     gender: str
 
-
 # ---------------- Common ---------------- #
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
-
 
 class AppointmentRequest(BaseModel):
     doctor_id: int
-    date: str   # could be `datetime.date` if you want stricter typing
-    time: str   # or `datetime.time`
-
+    date: date      # expects YYYY-MM-DD format input, auto-parsed to datetime.date
+    time: time      # expects HH:MM[:SS] format input, auto-parsed to datetime.time
 
 class PrescriptionRequest(BaseModel):
-    patient: str  # or patient_id if you prefer IDs
+    patient_id: int   # use ID to uniquely identify patient
     medicine: str
-
 
 class HospitalRegisterRequest(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
     city: str
-
-
