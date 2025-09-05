@@ -9,6 +9,11 @@ DATABASE_URL = os.getenv(
     "postgresql://raksha_360_user:IXSbIC6uSyPwpUgHc2toiijhMwYFuQle@dpg-d2rc8mv5r7bs73bru9ig-a/raksha_360"
 )
 
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://raksha_360_iyyc_user:cnmxNVfakZunRQGmY94OIog0rDxyGpZp@dpg-d2rfn1euk2gs7389acgg-a/raksha_360_iyyc"
+)
+
 # ✅ SQLAlchemy Engine
 engine = create_engine(DATABASE_URL, echo=True, future=True)
 
