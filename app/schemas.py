@@ -25,3 +25,23 @@ class PatientSignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class AppointmentRequest(BaseModel):
+    doctor_id: int
+    date: str   # could be `datetime.date` if you want stricter typing
+    time: str   # or `datetime.time`
+
+
+class PrescriptionRequest(BaseModel):
+    patient: str  # or patient_id if you prefer IDs
+    medicine: str
+
+
+class HospitalRegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    city: str
+
+

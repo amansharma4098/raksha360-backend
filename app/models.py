@@ -23,15 +23,14 @@ class Doctor(Base):
 
 class Patient(Base):
     __tablename__ = "patients"
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    city = Column(String)
-    age = Column(Integer)
-    gender = Column(String)
-
-    appointments = relationship("Appointment", back_populates="patient")
+    city = Column(String, nullable=True)
+    age = Column(Integer, nullable=True)
+    gender = Column(String, nullable=True)
 
 
 class Appointment(Base):

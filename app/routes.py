@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
 import datetime, os
+from datetime import datetime, timedelta
 
 from app.database import SessionLocal, Base, engine, get_db
 from app import models
@@ -35,20 +36,20 @@ def patient_signup(payload: PatientSignupRequest, db: Session = Depends(get_db))
     db.refresh(patient)
     return {"msg": "Patient registered", "patient_id": patient.id}
 
+
 @router.post("/auth/patient/login")
 @router.post("/patients/login")  # alias for frontend compatibility
 def patient_login(payload: LoginRequest, db: Session = Depends(get_db)):
     patient = db.query(models.Patient).filter(models.Patient.email == payload.email).first()
     if not patient:
-        print(f"Login failed: patient not found for email: {payload.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     verified = verify_password(payload.password, patient.password_hash)
-    print(f"Password verification result for {payload.email}: {verified}")
     if not verified:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"sub": patient.email, "role": "patient"})
+    token = create_access_token({"sub": patient.email, "role": "patient", "id": patient.id})
+    return {"token": token}
     return {"token": token}
 
 # ---------------------- DOCTOR AUTH ---------------------- #
@@ -194,7 +195,7 @@ def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
     payload = {
         "sub": str(hospital.id),
         "role": "hospital",
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=12)
+        "exp": datetime.utcnow() + timedelta(hours=12)
     }
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer", "hospital_id": hospital.id}
