@@ -7,3 +7,4 @@ python-jose[cryptography]
 pydantic
 python-multipart
 bcrypt==3.2.2 
+

@@ -1,6 +1,8 @@
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
-from jose import JWTError, jwt
+
+from jose import jwt, JWTError
+
 
 SECRET_KEY = "supersecretkey"  # replace with env variable later
 ALGORITHM = "HS256"

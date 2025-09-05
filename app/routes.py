@@ -11,7 +11,15 @@ from app.database import SessionLocal, Base, engine
 from app import models
 from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 from fastapi.security import OAuth2PasswordRequestForm
-import jwt, datetime, os
+from jose import jwt, JWTError
+import datetime, os
+
+from fastapi.security import OAuth2PasswordRequestForm
+
+
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
+ALGORITHM = "HS256"
+
 
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
 ALGORITHM = "HS256"
@@ -207,11 +215,6 @@ def register_hospital(name: str, email: str, password: str, city: str, db: Sessi
 
 
 
-from fastapi.security import OAuth2PasswordRequestForm
-import jwt, datetime, os
-
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
-ALGORITHM = "HS256"
 
 @router.post("/auth/hospital/login")
 def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
