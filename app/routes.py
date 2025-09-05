@@ -197,8 +197,7 @@ def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), patie
 
 
 
-router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 @router.post("/hospital/register")
 def register_hospital(name: str, email: str, password: str, city: str, db: Session = Depends(get_db)):
