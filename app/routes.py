@@ -2,13 +2,22 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
-
+from fastapi import Depends, HTTPException, APIRouter, Form
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.models import Hospital
+from passlib.context import CryptContext
 from app.database import SessionLocal, Base, engine
 from app import models
 from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
+from fastapi.security import OAuth2PasswordRequestForm
+import jwt, datetime, os
 
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
+ALGORITHM = "HS256"
 from .schemas import DoctorSignupRequest, PatientSignupRequest, LoginRequest
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 Base.metadata.create_all(bind=engine)
 
 router = APIRouter()
@@ -178,3 +187,43 @@ def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), patie
     return {"msg": "Appointment cancelled"}
 
 
+
+
+router = APIRouter()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+@router.post("/hospital/register")
+def register_hospital(name: str, email: str, password: str, city: str, db: Session = Depends(get_db)):
+    existing = db.query(Hospital).filter(Hospital.email == email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Hospital already registered")
+    
+    hashed = pwd_context.hash(password)
+    hospital = Hospital(name=name, email=email, password_hash=hashed, city=city)
+    db.add(hospital)
+    db.commit()
+    db.refresh(hospital)
+    return {"message": "Hospital registered successfully", "hospital_id": hospital.id}
+
+
+
+from fastapi.security import OAuth2PasswordRequestForm
+import jwt, datetime, os
+
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
+ALGORITHM = "HS256"
+
+@router.post("/auth/hospital/login")
+def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    hospital = db.query(Hospital).filter(Hospital.email == form_data.username).first()
+    if not hospital or not pwd_context.verify(form_data.password, hospital.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    # JWT Token
+    payload = {
+        "sub": str(hospital.id),
+        "role": "hospital",
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=12)
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return {"access_token": token, "token_type": "bearer", "hospital_id": hospital.id}

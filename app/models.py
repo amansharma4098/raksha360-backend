@@ -56,3 +56,14 @@ class Prescription(Base):
 
     patient = relationship("Patient")
     doctor = relationship("Doctor")
+
+
+
+class Hospital(Base):
+    __tablename__ = "hospitals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    city = Column(String, nullable=False)
