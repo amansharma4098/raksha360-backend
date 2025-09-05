@@ -4,10 +4,7 @@ from sqlalchemy.orm import sessionmaker
 import os
 
 # ✅ Database URL (Render will provide DATABASE_URL as an environment variable)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://raksha_360_user:IXSbIC6uSyPwpUgHc2toiijhMwYFuQle@dpg-d2rc8mv5r7bs73bru9ig-a/raksha_360"
-)
+
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
