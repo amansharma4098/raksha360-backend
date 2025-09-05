@@ -8,3 +8,5 @@ pydantic
 python-multipart
 bcrypt==3.2.2 
 
+pydantic[email]
+email-validator
