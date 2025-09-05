@@ -1,44 +1,55 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
-from fastapi import Depends, HTTPException, APIRouter, Form
-from sqlalchemy.orm import Session
-from app.database import get_db
-from app.models import Hospital
-from passlib.context import CryptContext
-from app.database import SessionLocal, Base, engine
-from app import models
-from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
 import datetime, os
 
-from fastapi.security import OAuth2PasswordRequestForm
+from app.database import SessionLocal, Base, engine, get_db
+from app import models
+from app.schemas import DoctorSignupRequest, PatientSignupRequest, LoginRequest
+from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
+from passlib.context import CryptContext
 
-
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
-ALGORITHM = "HS256"
-
-
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
-ALGORITHM = "HS256"
-from .schemas import DoctorSignupRequest, PatientSignupRequest, LoginRequest
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 Base.metadata.create_all(bind=engine)
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/patient/login")
 
-# ---------------------- DB Session ---------------------- #
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# ---------------------- PATIENT AUTH ---------------------- #
+@router.post("/auth/patient/signup")
+@router.post("/patients/signup")  # alias for frontend compatibility
+def patient_signup(payload: PatientSignupRequest, db: Session = Depends(get_db)):
+    if db.query(models.Patient).filter(models.Patient.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Patient already exists")
 
+    patient = models.Patient(
+        name=payload.name,
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        city=payload.city,
+        age=payload.age,
+        gender=payload.gender,
+    )
+    db.add(patient)
+    db.commit()
+    db.refresh(patient)
+    return {"msg": "Patient registered", "patient_id": patient.id}
+
+@router.post("/auth/patient/login")
+@router.post("/patients/login")  # alias for frontend compatibility
+def patient_login(payload: LoginRequest, db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.email == payload.email).first()
+    if not patient:
+        print(f"Login failed: patient not found for email: {payload.email}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    verified = verify_password(payload.password, patient.password_hash)
+    print(f"Password verification result for {payload.email}: {verified}")
+    if not verified:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token({"sub": patient.email, "role": "patient"})
+    return {"token": token}
 
 # ---------------------- DOCTOR AUTH ---------------------- #
 @router.post("/auth/doctor/signup")
@@ -68,41 +79,9 @@ def doctor_login(payload: LoginRequest, db: Session = Depends(get_db)):
     token = create_access_token({"sub": doctor.email, "role": "doctor"})
     return {
         "token": token,
-        "doctor_id": doctor.id,  
-        "name": doctor.name       
+        "doctor_id": doctor.id,
+        "name": doctor.name
     }
-
-
-# ---------------------- PATIENT AUTH ---------------------- #
-@router.post("/auth/patient/signup")
-@router.post("/patients/signup")  # alias for frontend compatibility
-def patient_signup(payload: PatientSignupRequest, db: Session = Depends(get_db)):
-    if db.query(models.Patient).filter(models.Patient.email == payload.email).first():
-        raise HTTPException(status_code=400, detail="Patient already exists")
-
-    patient = models.Patient(
-        name=payload.name,
-        email=payload.email,
-        password_hash=hash_password(payload.password),
-        city=payload.city,
-        age=payload.age,
-        gender=payload.gender,
-    )
-    db.add(patient)
-    db.commit()
-    db.refresh(patient)
-    return {"msg": "Patient registered", "patient_id": patient.id}
-
-
-@router.post("/auth/patient/login")
-@router.post("/patients/login")  # alias for frontend compatibility
-def patient_login(payload: LoginRequest, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter(models.Patient.email == payload.email).first()
-    if not patient or not verify_password(payload.password, patient.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = create_access_token({"sub": patient.email, "role": "patient"})
-    return {"token": token}
-
 
 # ---------------------- HELPERS ---------------------- #
 def get_current_patient(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -118,8 +97,7 @@ def get_current_patient(token: str = Depends(oauth2_scheme), db: Session = Depen
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-
-# ---------------------- DOCTORS ---------------------- #
+# ---------------------- DOCTORS SEARCH ---------------------- #
 @router.get("/doctors")
 def search_doctors(city: str = None, specialization: str = None, degree: str = None, db: Session = Depends(get_db)):
     query = db.query(models.Doctor)
@@ -130,7 +108,6 @@ def search_doctors(city: str = None, specialization: str = None, degree: str = N
     if degree:
         query = query.filter(models.Doctor.degree.ilike(f"%{degree}%"))
     return query.all()
-
 
 # ---------------------- APPOINTMENTS ---------------------- #
 @router.post("/appointments")
@@ -143,11 +120,23 @@ def book_appointment(doctor_id: int, date: str, time: str, db: Session = Depends
     db.refresh(appointment)
     return {"msg": "Appointment booked", "appointment_id": appointment.id}
 
-
 @router.get("/appointments")
 def get_appointments(db: Session = Depends(get_db), patient=Depends(get_current_patient)):
     return db.query(models.Appointment).filter(models.Appointment.patient_id == patient.id).all()
 
+@router.delete("/appointments/{appointment_id}")
+def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), patient=Depends(get_current_patient)):
+    appointment = db.query(models.Appointment).filter(
+        models.Appointment.id == appointment_id,
+        models.Appointment.patient_id == patient.id
+    ).first()
+
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    db.delete(appointment)
+    db.commit()
+    return {"msg": "Appointment cancelled"}
 
 # ---------------------- PATIENT DETAILS ---------------------- #
 @router.get("/patients/{patient_id}")
@@ -164,7 +153,6 @@ def get_patient(patient_id: int, db: Session = Depends(get_db)):
         "gender": patient.gender,
     }
 
-
 # ---------------------- PRESCRIPTIONS ---------------------- #
 @router.post("/prescriptions")
 def create_prescription(patient: str, medicine: str, db: Session = Depends(get_db)):
@@ -179,25 +167,10 @@ def create_prescription(patient: str, medicine: str, db: Session = Depends(get_d
     db.refresh(prescription)
     return {"msg": "Prescription added", "prescription_id": prescription.id}
 
+# ---------------------- HOSPITAL AUTH ---------------------- #
+from app.models import Hospital
 
-@router.delete("/appointments/{appointment_id}")
-def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), patient=Depends(get_current_patient)):
-    appointment = db.query(models.Appointment).filter(
-        models.Appointment.id == appointment_id,
-        models.Appointment.patient_id == patient.id  # ✅ ensure only their own appt
-    ).first()
-
-    if not appointment:
-        raise HTTPException(status_code=404, detail="Appointment not found")
-
-    db.delete(appointment)
-    db.commit()
-    return {"msg": "Appointment cancelled"}
-
-
-
-
-
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 @router.post("/hospital/register")
 def register_hospital(name: str, email: str, password: str, city: str, db: Session = Depends(get_db)):
@@ -212,16 +185,12 @@ def register_hospital(name: str, email: str, password: str, city: str, db: Sessi
     db.refresh(hospital)
     return {"message": "Hospital registered successfully", "hospital_id": hospital.id}
 
-
-
-
 @router.post("/auth/hospital/login")
 def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     hospital = db.query(Hospital).filter(Hospital.email == form_data.username).first()
     if not hospital or not pwd_context.verify(form_data.password, hospital.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # JWT Token
     payload = {
         "sub": str(hospital.id),
         "role": "hospital",
