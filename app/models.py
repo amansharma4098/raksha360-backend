@@ -16,12 +16,18 @@ class Doctor(Base):
     degree = Column(String, nullable=True)
     city = Column(String, nullable=True)
     contact = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # --- NEW: Associate doctor with a hospital (fix for dashboard counts) ---
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)
+    hospital = relationship("Hospital", back_populates="doctors", foreign_keys=[hospital_id])
+
+    # existing relationships
     appointments = relationship("Appointment", back_populates="doctor")
     prescriptions = relationship("Prescription", back_populates="doctor")
 
     def __repr__(self):
-        return f"<Doctor(id={self.id}, name={self.name})>"
+        return f"<Doctor(id={self.id}, name={self.name}, hospital_id={self.hospital_id})>"
 
 class Patient(Base):
     __tablename__ = "patients"
@@ -32,6 +38,7 @@ class Patient(Base):
     city = Column(String, nullable=True)
     age = Column(Integer, nullable=True)
     gender = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     appointments = relationship("Appointment", back_populates="patient")
     prescriptions = relationship("Prescription", back_populates="patient")
@@ -46,6 +53,7 @@ class Appointment(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     date = Column(Date, nullable=False)
     status = Column(String, default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     doctor = relationship("Doctor", back_populates="appointments")
     patient = relationship("Patient", back_populates="appointments")
@@ -67,6 +75,9 @@ class Hospital(Base):
     staff = relationship("Staff", back_populates="hospital", cascade="all, delete-orphan")
     pros = relationship("Pro", back_populates="hospital", cascade="all, delete-orphan")
     requests = relationship("HospitalRequest", back_populates="hospital", cascade="all, delete-orphan")
+
+    # NEW: doctors relationship so Hospital -> Doctor works for counts/queries
+    doctors = relationship("Doctor", back_populates="hospital", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Hospital(id={self.id}, name={self.name})>"
