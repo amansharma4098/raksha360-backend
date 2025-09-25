@@ -1,5 +1,5 @@
 # app/router.py
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
@@ -345,22 +345,63 @@ def download_prescription_pdf(pres_id: int, token: str = Depends(oauth2_scheme_g
     })
 
 # ---------------------- HOSPITAL AUTH & ONBOARD (Hospital portal) ---------------------- #
+# JSON-based registration (preferred)
 @router.post("/hospital/register")
 def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(get_db)):
     existing = db.query(models.Hospital).filter(models.Hospital.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Hospital already registered")
-    hashed = pwd_context.hash(payload.password)
-    hospital = models.Hospital(name=payload.name, email=payload.email, password_hash=hashed, city=payload.city, status="pending")
+    hashed = hash_password(payload.password)
+    hospital = models.Hospital(
+        name=payload.name,
+        email=payload.email,
+        password_hash=hashed,
+        city=payload.city,
+        status="pending"
+    )
     db.add(hospital)
     db.commit()
     db.refresh(hospital)
     # Optionally create a "signup" ticket for admin review
     signup_ticket = models.HospitalRequest(
         hospital_id=hospital.id,
-        created_by=None,
+        created_by_hospital=None,
         request_type="onboard_hospital",
         payload={"name": payload.name, "email": payload.email, "city": payload.city},
+        status="open"
+    )
+    db.add(signup_ticket)
+    db.commit()
+    return {"message": "Hospital registered and signup request submitted", "hospital_id": hospital.id}
+
+# Form-based registration (for HTML forms / curl --data)
+@router.post("/hospital/register-form")
+def register_hospital_form(
+    name: str = Form(...),
+    email: str = Form(...),
+    city: str = Form(None),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(models.Hospital).filter(models.Hospital.email == email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Hospital already registered")
+    hashed = hash_password(password)
+    hospital = models.Hospital(
+        name=name,
+        email=email,
+        password_hash=hashed,
+        city=city or "",
+        status="pending"
+    )
+    db.add(hospital)
+    db.commit()
+    db.refresh(hospital)
+    signup_ticket = models.HospitalRequest(
+        hospital_id=hospital.id,
+        created_by_hospital=None,
+        request_type="onboard_hospital",
+        payload={"name": name, "email": email, "city": city},
         status="open"
     )
     db.add(signup_ticket)
@@ -370,7 +411,7 @@ def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(ge
 @router.post("/auth/hospital/login")
 def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     hospital = db.query(models.Hospital).filter(models.Hospital.email == form_data.username).first()
-    if not hospital or not pwd_context.verify(form_data.password, hospital.password_hash):
+    if not hospital or not verify_password(form_data.password, hospital.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
     payload = {
@@ -391,7 +432,7 @@ def create_hospital_request(payload: RequestCreateSchema, hospital: models.Hospi
     """
     ticket = models.HospitalRequest(
         hospital_id=hospital.id,
-        created_by=None,  # we don't have hospital_user accounts in your current model; adjust if you do
+        created_by_hospital=None,
         request_type=payload.request_type,
         payload=payload.payload,
         status="open"
@@ -483,7 +524,7 @@ def admin_create_hospital(h: HospitalRegisterRequest, current_admin: models.Admi
     existing = db.query(models.Hospital).filter(models.Hospital.email == h.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Hospital already exists")
-    hashed = pwd_context.hash(h.password)
+    hashed = hash_password(h.password)
     new = models.Hospital(name=h.name, email=h.email, password_hash=hashed, city=h.city, status="active")
     db.add(new)
     db.commit()
