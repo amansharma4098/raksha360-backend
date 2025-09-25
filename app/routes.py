@@ -20,6 +20,7 @@ from app.auth import hash_password, verify_password, create_access_token, SECRET
 # LangChain + PDF utils (ensure these files exist)
 from .langchain_agent import call_langchain_agent
 from .utils.pdf import generate_prescription_pdf
+
 # ensure tables (dev). In production use Alembic migrations.
 Base.metadata.create_all(bind=engine)
 
@@ -345,8 +346,8 @@ def download_prescription_pdf(pres_id: int, token: str = Depends(oauth2_scheme_g
     })
 
 # ---------------------- HOSPITAL AUTH & ONBOARD (Hospital portal) ---------------------- #
-# JSON-based registration (preferred)
-@router.post("/hospital/register")
+# JSON-based registration (preferred) - now returns token + hospital for auto-login
+@router.post("/hospital/register", status_code=201)
 def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(get_db)):
     existing = db.query(models.Hospital).filter(models.Hospital.email == payload.email).first()
     if existing:
@@ -372,9 +373,34 @@ def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(ge
     )
     db.add(signup_ticket)
     db.commit()
-    return {"message": "Hospital registered and signup request submitted", "hospital_id": hospital.id}
 
-# Form-based registration (for HTML forms / curl --data)
+    # Create token for the newly registered hospital so frontend can auto-login
+    token_payload = {
+        "sub": str(hospital.email),
+        "role": "hospital",
+        "hospital_id": str(hospital.id),
+        # expiry consistent with hospital_login (12 hours)
+        "exp": datetime.utcnow() + timedelta(hours=12)
+    }
+
+    # Prefer using create_access_token if it returns a token string; fallback to jose jwt.encode
+    try:
+        token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
+    except Exception:
+        token = jwt.encode(token_payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return {
+        "token": token,
+        "hospital": {
+            "id": hospital.id,
+            "name": hospital.name,
+            "email": hospital.email,
+            "city": hospital.city,
+            "status": hospital.status
+        }
+    }
+
+# Form-based registration (for HTML forms / curl --data) - also returns token + hospital
 @router.post("/hospital/register-form")
 def register_hospital_form(
     name: str = Form(...),
@@ -406,7 +432,29 @@ def register_hospital_form(
     )
     db.add(signup_ticket)
     db.commit()
-    return {"message": "Hospital registered and signup request submitted", "hospital_id": hospital.id}
+
+    # Create token for the newly registered hospital
+    try:
+        token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
+    except Exception:
+        token_payload = {
+            "sub": str(hospital.email),
+            "role": "hospital",
+            "hospital_id": str(hospital.id),
+            "exp": datetime.utcnow() + timedelta(hours=12)
+        }
+        token = jwt.encode(token_payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return {
+        "token": token,
+        "hospital": {
+            "id": hospital.id,
+            "name": hospital.name,
+            "email": hospital.email,
+            "city": hospital.city,
+            "status": hospital.status
+        }
+    }
 
 @router.post("/auth/hospital/login")
 def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -414,14 +462,20 @@ def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
     if not hospital or not verify_password(form_data.password, hospital.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    payload = {
-        "sub": str(hospital.email),
-        "role": "hospital",
-        "hospital_id": str(hospital.id),
-        "exp": datetime.utcnow() + timedelta(hours=12)
-    }
-    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-    return {"access_token": token, "token_type": "bearer", "hospital_id": hospital.id}
+    # Use create_access_token for consistency with other auth endpoints
+    try:
+        token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
+    except Exception:
+        # fallback to manual jwt if create_access_token isn't available or raises
+        payload = {
+            "sub": str(hospital.email),
+            "role": "hospital",
+            "hospital_id": str(hospital.id),
+            "exp": datetime.utcnow() + timedelta(hours=12)
+        }
+        token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return {"token": token, "hospital_id": hospital.id}
 
 # ---------------------- HOSPITAL REQUESTS (Tickets) ---------------------- #
 @router.post("/hospital/requests")
