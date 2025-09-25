@@ -29,6 +29,7 @@ class Doctor(Base):
     def __repr__(self):
         return f"<Doctor(id={self.id}, name={self.name}, hospital_id={self.hospital_id})>"
 
+
 class Patient(Base):
     __tablename__ = "patients"
     id = Column(Integer, primary_key=True, index=True)
@@ -46,6 +47,7 @@ class Patient(Base):
     def __repr__(self):
         return f"<Patient(id={self.id}, name={self.name})>"
 
+
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(Integer, primary_key=True, index=True)
@@ -61,6 +63,7 @@ class Appointment(Base):
     def __repr__(self):
         return f"<Appointment(id={self.id}, doctor_id={self.doctor_id}, patient_id={self.patient_id}, date={self.date})>"
 
+
 class Hospital(Base):
     __tablename__ = "hospitals"
     id = Column(Integer, primary_key=True, index=True)
@@ -74,13 +77,30 @@ class Hospital(Base):
     # convenience relationships
     staff = relationship("Staff", back_populates="hospital", cascade="all, delete-orphan")
     pros = relationship("Pro", back_populates="hospital", cascade="all, delete-orphan")
-    requests = relationship("HospitalRequest", back_populates="hospital", cascade="all, delete-orphan")
+
+    # NOTE: HospitalRequest has TWO foreign keys to hospitals.id:
+    #   - hospital_id            (the target hospital for the request)
+    #   - created_by_hospital    (optional: who created it, may be another hospital)
+    # So we expose two relationships and disambiguate with foreign_keys.
+    requests = relationship(
+        "HospitalRequest",
+        foreign_keys="HospitalRequest.hospital_id",
+        back_populates="hospital",
+        cascade="all, delete-orphan"
+    )
+    requests_created = relationship(
+        "HospitalRequest",
+        foreign_keys="HospitalRequest.created_by_hospital",
+        back_populates="creator_hospital",
+        cascade="all, delete-orphan"
+    )
 
     # NEW: doctors relationship so Hospital -> Doctor works for counts/queries
     doctors = relationship("Doctor", back_populates="hospital", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Hospital(id={self.id}, name={self.name})>"
+
 
 # ---- Prescription model (single source of truth) ----
 class Prescription(Base):
@@ -110,7 +130,9 @@ class Prescription(Base):
     def __repr__(self):
         return f"<Prescription(id={self.id}, patient_id={self.patient_id}, doctor_id={self.doctor_id}, date={self.created_at})>"
 
+
 # --- New models for Admin + Hospital Requests + Staff / Pro ---
+
 
 class AdminUser(Base):
     __tablename__ = "admin_users"
@@ -128,6 +150,7 @@ class AdminUser(Base):
     def __repr__(self):
         return f"<AdminUser(id={self.id}, email={self.email})>"
 
+
 class HospitalRequest(Base):
     __tablename__ = "hospital_requests"
     id = Column(Integer, primary_key=True, index=True)
@@ -142,10 +165,12 @@ class HospitalRequest(Base):
 
     # relationships
     hospital = relationship("Hospital", foreign_keys=[hospital_id], back_populates="requests")
+    creator_hospital = relationship("Hospital", foreign_keys=[created_by_hospital], back_populates="requests_created")
     assigned_admin_user = relationship("AdminUser", foreign_keys=[assigned_admin], back_populates="assigned_requests")
 
     def __repr__(self):
         return f"<HospitalRequest(id={self.id}, hospital_id={self.hospital_id}, type={self.request_type}, status={self.status})>"
+
 
 class Staff(Base):
     __tablename__ = "staff"
@@ -161,6 +186,7 @@ class Staff(Base):
 
     def __repr__(self):
         return f"<Staff(id={self.id}, name={self.name}, hospital_id={self.hospital_id})>"
+
 
 class Pro(Base):
     __tablename__ = "pros"
