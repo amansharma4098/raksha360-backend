@@ -18,9 +18,8 @@ from app.schemas import (
 from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 
 # LangChain + PDF utils (ensure these files exist)
-from app.langchain_agent import call_langchain_agent
-from app.utils.pdf import generate_prescription_pdf
-
+from .langchain_agent import call_langchain_agent
+from .utils.pdf import generate_prescription_pdf
 # ensure tables (dev). In production use Alembic migrations.
 Base.metadata.create_all(bind=engine)
 
