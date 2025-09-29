@@ -76,8 +76,14 @@ class Hospital(Base):
     staff = relationship("Staff", back_populates="hospital", cascade="all, delete-orphan")
     pros = relationship("Pro", back_populates="hospital", cascade="all, delete-orphan")
 
-    # Tickets relationship (single ticket table)
-    tickets = relationship("Ticket", back_populates="hospital", cascade="all, delete-orphan")
+    # Tickets relationship (single ticket table).
+    # Must specify foreign_keys because Ticket has multiple FKs that reference hospitals.id
+    tickets = relationship(
+        "Ticket",
+        back_populates="hospital",
+        cascade="all, delete-orphan",
+        foreign_keys="Ticket.hospital_id"  # explicit disambiguation
+    )
 
     doctors = relationship("Doctor", back_populates="hospital", cascade="all, delete-orphan")
 
@@ -120,7 +126,11 @@ class AdminUser(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # convenience relationship to tickets assigned to this admin
-    assigned_tickets = relationship("Ticket", back_populates="assigned_admin_user", foreign_keys="Ticket.assigned_admin")
+    assigned_tickets = relationship(
+        "Ticket",
+        back_populates="assigned_admin_user",
+        foreign_keys="Ticket.assigned_admin"
+    )
 
     def __repr__(self):
         return f"<AdminUser(id={self.id}, email={self.email})>"
@@ -166,7 +176,7 @@ class Ticket(Base):
     __tablename__ = "tickets"
 
     id = Column(Integer, primary_key=True, index=True)
-    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)  # which hospital this ticket belongs to (nullable for admin/system tickets)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)  # which hospital this ticket belongs to
     type = Column(String, nullable=False)           # e.g. get_staff, get_pro, onboard_hospital
     details = Column(Text, nullable=True)           # human readable details
     payload = Column(JSON, nullable=True)           # structured JSON payload
@@ -186,6 +196,7 @@ class Ticket(Base):
     last_updated_by_hospital = Column(Integer, ForeignKey("hospitals.id"), nullable=True)
 
     # relationships
+    # explicit foreign_keys on relationship below disambiguates join condition
     hospital = relationship("Hospital", back_populates="tickets", foreign_keys=[hospital_id])
     assigned_admin_user = relationship("AdminUser", foreign_keys=[assigned_admin], back_populates="assigned_tickets")
     closed_by_admin_user = relationship("AdminUser", foreign_keys=[closed_by_admin], viewonly=True)
