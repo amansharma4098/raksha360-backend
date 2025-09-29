@@ -63,46 +63,53 @@ class PatientSignupRequest(BaseModel):
 # ---------------- Appointments ----------------
 class AppointmentRequest(BaseModel):
     doctor_id: int
-    # date is a date object (your model uses Date). If you want datetime, change type to datetime.
     date: date
 
-# ---------------- Hospital register & ticketing ----------------
+# ---------------- Hospital register ----------------
 class HospitalRegisterRequest(BaseModel):
     name: str
     email: EmailStr
     password: str
     city: str
 
-class RequestCreateSchema(BaseModel):
+# ---------------- Ticket schemas (single ticket table) ----------------
+class TicketCreate(BaseModel):
     """
-    Represents a hospital-created ticket/request.
-    payload is flexible — should include fields like:
-      { "count": 2, "location": "Delhi", "offered_salary": "15000", "notes": "..." }
+    Create a ticket.
+      - hospital users: ignore hospital_id in request; hospital_id will be set from token.
+      - admin users: may specify hospital_id to create ticket for a hospital (optional).
     """
-    request_type: str
-    payload: Dict[str, Any]
+    type: str
+    details: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+    hospital_id: Optional[int] = None  # admin-only - ignored for hospital token
+    assigned_admin: Optional[int] = None
 
-class AdminActionSchema(BaseModel):
+class TicketUpdate(BaseModel):
     """
-    Admin actions on tickets:
-      action: 'assign' | 'start' | 'resolve' | 'reject' | 'approve_signup'
-      assign_to: admin id (int) when action == 'assign'
-      note: optional note or reason
+    Update a ticket. Fields are optional.
+    - status: e.g. open, in_progress, resolved, rejected, closed
+    - details/payload can be edited; we track who made the update automatically.
     """
-    action: str
-    assign_to: Optional[int] = None
-    note: Optional[str] = None
+    details: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
+    assigned_admin: Optional[int] = None
+    note: Optional[str] = None  # optional human note (will be stored inside payload.notes or ignored if you prefer)
 
-# ---------------- Request output model ----------------
-class RequestOut(BaseModel):
+class TicketOut(BaseModel):
     id: int
     hospital_id: Optional[int]
-    request_type: str
+    type: str
+    details: Optional[str]
     payload: Optional[Dict[str, Any]]
     status: str
     assigned_admin: Optional[int]
     created_at: datetime
     updated_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    closed_by_admin: Optional[int] = None
+    closed_by_hospital: Optional[int] = None
 
     class Config:
         orm_mode = True

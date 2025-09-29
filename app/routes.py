@@ -1,20 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status, Form
+# app/router.py
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Form, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from jose import jwt, JWTError
+from jose import jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import traceback
 import logging
-from fastapi import Request
-import sys, traceback
+import sys
 
 from app.database import SessionLocal, Base, engine, get_db
 from app import models
 from app.schemas import (
     DoctorSignupRequest, PatientSignupRequest, LoginRequest,
     AppointmentRequest, PrescriptionCreate, PrescriptionOut,
-    HospitalRegisterRequest, RequestCreateSchema, AdminActionSchema
+    HospitalRegisterRequest, TicketCreate, TicketUpdate, TicketOut
 )
 from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 from .langchain_agent import call_langchain_agent
@@ -76,17 +76,168 @@ def get_current_admin(token: str = Depends(oauth2_scheme_admin), db: Session = D
         raise HTTPException(status_code=401, detail="Admin not found")
     return admin
 
-# ---------------------- NEW: HOSPITAL ME ---------------------- #
-@router.get("/hospital/me")
-def hospital_me(hospital: models.Hospital = Depends(get_current_hospital)):
-    return {
-        "id": hospital.id,
-        "name": hospital.name,
-        "email": hospital.email,
-        "city": getattr(hospital, "city", None),
-        "status": getattr(hospital, "status", None),
-        "created_at": getattr(hospital, "created_at", None)
-    }
+# Helper: generic token decode for endpoints that accept both hospital & admin tokens
+def get_actor_from_token(token: str, db: Session):
+    payload = decode_token_payload(token)
+    role = payload.get("role")
+    sub = payload.get("sub")
+    if role == "hospital":
+        hosp = db.query(models.Hospital).filter(models.Hospital.email == sub).first()
+        if not hosp:
+            raise HTTPException(status_code=401, detail="Hospital not found")
+        return {"role": "hospital", "id": hosp.id, "email": hosp.email, "model": hosp}
+    elif role == "admin":
+        admin = db.query(models.AdminUser).filter(models.AdminUser.email == sub).first()
+        if not admin:
+            raise HTTPException(status_code=401, detail="Admin not found")
+        return {"role": "admin", "id": admin.id, "email": admin.email, "model": admin}
+    elif role == "doctor":
+        doctor = db.query(models.Doctor).filter(models.Doctor.email == sub).first()
+        if not doctor:
+            raise HTTPException(status_code=401, detail="Doctor not found")
+        return {"role": "doctor", "id": doctor.id, "email": doctor.email, "model": doctor}
+    elif role == "patient":
+        patient = db.query(models.Patient).filter(models.Patient.email == sub).first()
+        if not patient:
+            raise HTTPException(status_code=401, detail="Patient not found")
+        return {"role": "patient", "id": patient.id, "email": patient.email, "model": patient}
+    else:
+        raise HTTPException(status_code=401, detail="Unknown role in token")
+
+# ---------------------- NEW: Tickets (single table) ---------------------- #
+@router.get("/tickets", response_model=list[TicketOut])
+def get_tickets(status: str = None, hospital_id: int = None, token: str = Depends(oauth2_scheme_generic), db: Session = Depends(get_db)):
+    """
+    - hospital token: returns tickets for that hospital
+    - admin token: returns all tickets (optionally filter by hospital_id or status)
+    - other roles: forbidden
+    """
+    actor = get_actor_from_token(token, db)
+    q = db.query(models.Ticket)
+
+    if actor["role"] == "hospital":
+        # hospital sees only its tickets
+        q = q.filter(models.Ticket.hospital_id == actor["id"])
+        if status:
+            q = q.filter(models.Ticket.status == status)
+        return q.order_by(models.Ticket.created_at.desc()).all()
+
+    if actor["role"] == "admin":
+        # admin sees all, optional filters
+        if hospital_id is not None:
+            q = q.filter(models.Ticket.hospital_id == hospital_id)
+        if status:
+            q = q.filter(models.Ticket.status == status)
+        return q.order_by(models.Ticket.created_at.desc()).all()
+
+    raise HTTPException(status_code=403, detail="Not authorized to list tickets")
+
+@router.post("/tickets", response_model=TicketOut, status_code=201)
+def create_ticket(ticket_in: TicketCreate, token: str = Depends(oauth2_scheme_generic), db: Session = Depends(get_db)):
+    """
+    Create a ticket.
+    - hospital token: ticket belongs to the calling hospital (hospital_id forced)
+    - admin token: may set hospital_id in body (or leave null for system ticket)
+    """
+    actor = get_actor_from_token(token, db)
+
+    # Build ticket
+    if actor["role"] == "hospital":
+        hospital_id = actor["id"]
+        t = models.Ticket(
+            hospital_id=hospital_id,
+            type=ticket_in.type,
+            details=ticket_in.details,
+            payload=ticket_in.payload,
+            status="open",
+            assigned_admin=ticket_in.assigned_admin,
+            last_updated_by_hospital=hospital_id
+        )
+    elif actor["role"] == "admin":
+        t = models.Ticket(
+            hospital_id=ticket_in.hospital_id,
+            type=ticket_in.type,
+            details=ticket_in.details,
+            payload=ticket_in.payload,
+            status="open",
+            assigned_admin=ticket_in.assigned_admin,
+            last_updated_by_admin=actor["id"]
+        )
+    else:
+        raise HTTPException(status_code=403, detail="Only hospital or admin can create tickets")
+
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return t
+
+@router.put("/tickets/{ticket_id}", response_model=TicketOut)
+def update_ticket(ticket_id: int, upd: TicketUpdate, token: str = Depends(oauth2_scheme_generic), db: Session = Depends(get_db)):
+    """
+    Update or close a ticket.
+    - hospital can update tickets belonging to their hospital; hospital's updates set last_updated_by_hospital
+      and if hospital sets status to 'closed' then closed_by_hospital and closed_at are set.
+    - admin can update any ticket; admin updates set last_updated_by_admin and if admin sets status to 'resolved' or 'closed'
+      closed_by_admin and closed_at are set.
+    """
+    actor = get_actor_from_token(token, db)
+    t = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Authorization
+    if actor["role"] == "hospital":
+        if t.hospital_id != actor["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this ticket")
+
+    # Apply updates
+    changed = False
+    if upd.details is not None:
+        t.details = upd.details
+        changed = True
+    if upd.payload is not None:
+        # Merge or replace policy: replace payload (simpler). Frontend can send merged object if desired.
+        t.payload = upd.payload
+        changed = True
+    if upd.assigned_admin is not None:
+        t.assigned_admin = upd.assigned_admin
+        changed = True
+    if upd.status is not None:
+        # handle status transitions and set closed fields depending on actor
+        new_status = upd.status
+        t.status = new_status
+        changed = True
+        if new_status in ("closed", "resolved"):
+            t.closed_at = datetime.utcnow()
+            if actor["role"] == "admin":
+                t.closed_by_admin = actor["id"]
+            elif actor["role"] == "hospital":
+                t.closed_by_hospital = actor["id"]
+
+    # track last updated by
+    if actor["role"] == "admin":
+        t.last_updated_by_admin = actor["id"]
+    elif actor["role"] == "hospital":
+        t.last_updated_by_hospital = actor["id"]
+
+    # if a note is provided, attempt to store it in payload.notes (list)
+    if upd.note:
+        payload = t.payload or {}
+        notes = payload.get("notes") if isinstance(payload, dict) else None
+        if not isinstance(notes, list):
+            notes = []
+        notes.append({"by": actor["role"], "by_id": actor["id"], "note": upd.note, "at": datetime.utcnow().isoformat()})
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        payload["notes"] = notes
+        t.payload = payload
+        changed = True
+
+    if changed:
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+
+    return t
 
 # ---------------------- PATIENT AUTH ---------------------- #
 @router.post("/auth/patient/signup")
@@ -300,7 +451,6 @@ def download_prescription_pdf(pres_id: int, token: str = Depends(oauth2_scheme_g
 
 # ---------------------- HOSPITAL AUTH & REQUESTS ---------------------- #
 
-
 @router.post("/hospital/register", status_code=201)
 def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(get_db), request: Request = None):
     try:
@@ -321,19 +471,19 @@ def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(ge
         db.commit()
         db.refresh(hospital)
 
-        # Try to create signup ticket — do this in a guarded block so signup can't fail because of ticket issues
+        # Create a signup ticket in the central tickets table
         try:
-            signup_ticket = models.HospitalRequest(
+            signup_ticket = models.Ticket(
                 hospital_id=hospital.id,
-                created_by_hospital=None,
-                request_type="onboard_hospital",
+                type="onboard_hospital",
+                details=f"Signup request for {payload.name}",
                 payload={"name": payload.name, "email": payload.email, "city": payload.city},
-                status="open"
+                status="open",
+                last_updated_by_hospital=hospital.id
             )
             db.add(signup_ticket)
             db.commit()
         except Exception as ticket_err:
-            # roll back only the ticket (hospital already committed)
             db.rollback()
             print("Warning: signup_ticket creation failed:", file=sys.stdout)
             traceback.print_exc(file=sys.stdout)
@@ -342,7 +492,6 @@ def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(ge
         try:
             token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
         except Exception:
-            # fallback to jose encode if needed
             token_payload = {
                 "sub": str(hospital.email),
                 "role": "hospital",
@@ -362,15 +511,13 @@ def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(ge
             }
         }
     except HTTPException:
-        # re-raise known HTTP exceptions
         raise
     except Exception as e:
-        # catch-all: log and return 500 with message
         db.rollback()
         print("register_hospital: unexpected error", file=sys.stdout)
         traceback.print_exc(file=sys.stdout)
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @router.post("/auth/hospital/login")
 def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     hospital = db.query(models.Hospital).filter(models.Hospital.email == form_data.username).first()
@@ -379,31 +526,36 @@ def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
     token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
     return {"token": token, "hospital_id": hospital.id}
 
+# Legacy wrapper endpoints kept for compatibility (they now call the central ticket endpoints)
 @router.post("/hospital/requests")
-def create_hospital_request(payload: RequestCreateSchema, hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):
-    ticket = models.HospitalRequest(
+def create_hospital_request(payload: TicketCreate, hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):
+    # alias for POST /tickets by hospital
+    token = None
+    # we can call create_ticket via internal logic instead of making HTTP call
+    t = models.Ticket(
         hospital_id=hospital.id,
-        created_by_hospital=None,
-        request_type=payload.request_type,
+        type=payload.type,
+        details=payload.details,
         payload=payload.payload,
-        status="open"
+        status="open",
+        last_updated_by_hospital=hospital.id
     )
-    db.add(ticket)
+    db.add(t)
     db.commit()
-    db.refresh(ticket)
-    return {"msg": "Request created", "request_id": ticket.id}
+    db.refresh(t)
+    return {"msg": "Request created", "request_id": t.id}
 
 @router.get("/hospital/requests")
 def list_hospital_requests(hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):
-    return db.query(models.HospitalRequest).filter(models.HospitalRequest.hospital_id == hospital.id).order_by(models.HospitalRequest.created_at.desc()).all()
+    return db.query(models.Ticket).filter(models.Ticket.hospital_id == hospital.id).order_by(models.Ticket.created_at.desc()).all()
 
 @router.get("/hospital/dashboard")
 def hospital_dashboard(hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):
     staff_count = db.query(models.Staff).filter(models.Staff.hospital_id == hospital.id).count() if hasattr(models, "Staff") else 0
     doctor_count = db.query(models.Doctor).filter(models.Doctor.hospital_id == hospital.id).count() if hasattr(models, "Doctor") else 0
     pro_count = db.query(models.Pro).filter(models.Pro.hospital_id == hospital.id).count() if hasattr(models, "Pro") else 0
-    req_count = db.query(models.HospitalRequest).filter(models.HospitalRequest.hospital_id == hospital.id).count()
-    return {"staff_count": staff_count, "doctor_count": doctor_count, "pro_count": pro_count, "request_count": req_count}
+    ticket_count = db.query(models.Ticket).filter(models.Ticket.hospital_id == hospital.id).count()
+    return {"staff_count": staff_count, "doctor_count": doctor_count, "pro_count": pro_count, "ticket_count": ticket_count}
 
 # ---------------------- ADMIN AUTH & REQUESTS ---------------------- #
 @router.post("/auth/admin/login")
@@ -415,43 +567,55 @@ def admin_login(payload: LoginRequest, db: Session = Depends(get_db)):
     return {"token": token, "admin_id": admin.id, "name": admin.name}
 
 @router.get("/admin/requests")
-def admin_list_requests(status: str = None, current_admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    q = db.query(models.HospitalRequest)
+def admin_list_requests(status: str = None, hospital_id: int = None, current_admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    q = db.query(models.Ticket)
     if status:
-        q = q.filter(models.HospitalRequest.status == status)
-    return q.order_by(models.HospitalRequest.created_at.desc()).all()
+        q = q.filter(models.Ticket.status == status)
+    if hospital_id is not None:
+        q = q.filter(models.Ticket.hospital_id == hospital_id)
+    return q.order_by(models.Ticket.created_at.desc()).all()
 
 @router.get("/admin/requests/{request_id}")
-def admin_get_request(request_id: str, current_admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    r = db.query(models.HospitalRequest).filter(models.HospitalRequest.id == request_id).first()
+def admin_get_request(request_id: int, current_admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    r = db.query(models.Ticket).filter(models.Ticket.id == request_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="Request not found")
     return r
 
 @router.post("/admin/requests/{request_id}/action")
-def admin_take_action(request_id: str, action: AdminActionSchema, current_admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    r = db.query(models.HospitalRequest).filter(models.HospitalRequest.id == request_id).first()
+def admin_take_action(request_id: int, action: dict, current_admin: models.AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    """
+    Keep a simple admin action endpoint for compatibility. `action` should be JSON like:
+      { "action": "assign" | "start" | "resolve" | "reject" | "approve_signup", "assign_to": <admin_id> }
+    This is a convenience wrapper that maps to ticket updates in the central table.
+    """
+    r = db.query(models.Ticket).filter(models.Ticket.id == request_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="Not found")
 
-    if action.action == "assign" and action.assign_to:
-        r.assigned_admin = action.assign_to
+    act = action.get("action")
+    if act == "assign" and action.get("assign_to"):
+        r.assigned_admin = action.get("assign_to")
         r.status = "in_progress"
-    elif action.action == "start":
+    elif act == "start":
         r.status = "in_progress"
-    elif action.action == "resolve":
+    elif act == "resolve":
         r.status = "resolved"
-    elif action.action == "reject":
+        r.closed_at = datetime.utcnow()
+        r.closed_by_admin = current_admin.id
+    elif act == "reject":
         r.status = "rejected"
-    elif action.action == "approve_signup":
-        hosp = db.query(models.Hospital).filter(models.Hospital.id == r.hospital_id).first()
-        if hosp:
-            hosp.status = "active"
-            r.status = "resolved"
-            db.add(hosp)
+    elif act == "approve_signup":
+        if r.hospital_id:
+            hosp = db.query(models.Hospital).filter(models.Hospital.id == r.hospital_id).first()
+            if hosp:
+                hosp.status = "active"
+                r.status = "resolved"
+                db.add(hosp)
     else:
         raise HTTPException(status_code=400, detail="Unknown action")
 
+    r.last_updated_by_admin = current_admin.id
     db.add(r)
     db.commit()
     db.refresh(r)
