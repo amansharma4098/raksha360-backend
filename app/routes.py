@@ -6,6 +6,8 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import traceback
 import logging
+from fastapi import Request
+import sys, traceback
 
 from app.database import SessionLocal, Base, engine, get_db
 from app import models
@@ -297,36 +299,78 @@ def download_prescription_pdf(pres_id: int, token: str = Depends(oauth2_scheme_g
     })
 
 # ---------------------- HOSPITAL AUTH & REQUESTS ---------------------- #
+
+
 @router.post("/hospital/register", status_code=201)
-def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(get_db)):
-    existing = db.query(models.Hospital).filter(models.Hospital.email == payload.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Hospital already registered")
-    hashed = hash_password(payload.password)
-    hospital = models.Hospital(
-        name=payload.name,
-        email=payload.email,
-        password_hash=hashed,
-        city=payload.city,
-        status="pending"
-    )
-    db.add(hospital)
-    db.commit()
-    db.refresh(hospital)
+def register_hospital(payload: HospitalRegisterRequest, db: Session = Depends(get_db), request: Request = None):
+    try:
+        existing = db.query(models.Hospital).filter(models.Hospital.email == payload.email).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Hospital already registered")
 
-    signup_ticket = models.HospitalRequest(
-        hospital_id=hospital.id,
-        created_by_hospital=None,
-        request_type="onboard_hospital",
-        payload={"name": payload.name, "email": payload.email, "city": payload.city},
-        status="open"
-    )
-    db.add(signup_ticket)
-    db.commit()
+        hashed = hash_password(payload.password)
+        hospital = models.Hospital(
+            name=payload.name,
+            email=payload.email,
+            password_hash=hashed,
+            city=payload.city,
+            status="pending"
+        )
 
-    token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
-    return {"token": token, "hospital": {"id": hospital.id, "name": hospital.name, "email": hospital.email, "city": hospital.city, "status": hospital.status}}
+        db.add(hospital)
+        db.commit()
+        db.refresh(hospital)
 
+        # Try to create signup ticket — do this in a guarded block so signup can't fail because of ticket issues
+        try:
+            signup_ticket = models.HospitalRequest(
+                hospital_id=hospital.id,
+                created_by_hospital=None,
+                request_type="onboard_hospital",
+                payload={"name": payload.name, "email": payload.email, "city": payload.city},
+                status="open"
+            )
+            db.add(signup_ticket)
+            db.commit()
+        except Exception as ticket_err:
+            # roll back only the ticket (hospital already committed)
+            db.rollback()
+            print("Warning: signup_ticket creation failed:", file=sys.stdout)
+            traceback.print_exc(file=sys.stdout)
+
+        # create token for auto-login
+        try:
+            token = create_access_token({"sub": hospital.email, "role": "hospital", "hospital_id": hospital.id})
+        except Exception:
+            # fallback to jose encode if needed
+            token_payload = {
+                "sub": str(hospital.email),
+                "role": "hospital",
+                "hospital_id": str(hospital.id),
+                "exp": datetime.utcnow() + timedelta(hours=12)
+            }
+            token = jwt.encode(token_payload, SECRET_KEY, algorithm=ALGORITHM)
+
+        return {
+            "token": token,
+            "hospital": {
+                "id": hospital.id,
+                "name": hospital.name,
+                "email": hospital.email,
+                "city": hospital.city,
+                "status": hospital.status
+            }
+        }
+    except HTTPException:
+        # re-raise known HTTP exceptions
+        raise
+    except Exception as e:
+        # catch-all: log and return 500 with message
+        db.rollback()
+        print("register_hospital: unexpected error", file=sys.stdout)
+        traceback.print_exc(file=sys.stdout)
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @router.post("/auth/hospital/login")
 def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     hospital = db.query(models.Hospital).filter(models.Hospital.email == form_data.username).first()
