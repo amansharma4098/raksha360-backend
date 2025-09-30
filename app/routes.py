@@ -105,6 +105,21 @@ def get_actor_from_token(token: str, db: Session):
         raise HTTPException(status_code=401, detail="Unknown role in token")
 
 # ---------------------- NEW: Tickets (single table) ---------------------- #
+def normalize_ticket_type(raw: str) -> str:
+    """
+    Normalize common frontend categories to canonical server values.
+    """
+    if not raw:
+        return "OTHER"
+    s = raw.strip().lower()
+    if s in ("pros", "pro", "pr", "pr_officer", "public_relations", "get_pro"):
+        return "PRO"
+    if s in ("staff", "get_staff", "employee"):
+        return "STAFF"
+    if s in ("doctor", "get_doctor", "doc"):
+        return "DOCTOR"
+    return raw.strip().upper()
+
 @router.get("/tickets", response_model=list[TicketOut])
 def get_tickets(status: str = None, hospital_id: int = None, token: str = Depends(oauth2_scheme_generic), db: Session = Depends(get_db)):
     """
@@ -138,17 +153,20 @@ def create_ticket(ticket_in: TicketCreate, token: str = Depends(oauth2_scheme_ge
     Create a ticket.
     - hospital token: ticket belongs to the calling hospital (hospital_id forced)
     - admin token: may set hospital_id in body (or leave null for system ticket)
+    Accepts simplified fields: type, count, description
     """
     actor = get_actor_from_token(token, db)
 
-    # Build ticket
+    t_type = normalize_ticket_type(ticket_in.type or "other")
     if actor["role"] == "hospital":
         hospital_id = actor["id"]
         t = models.Ticket(
             hospital_id=hospital_id,
-            type=ticket_in.type,
-            details=ticket_in.details,
-            payload=ticket_in.payload,
+            type=t_type,
+            details=ticket_in.description or ticket_in.type,
+            description=ticket_in.description,
+            count=ticket_in.count,
+            payload=ticket_in.__dict__.get("payload"),  # keep payload if present
             status="open",
             assigned_admin=ticket_in.assigned_admin,
             last_updated_by_hospital=hospital_id
@@ -156,9 +174,11 @@ def create_ticket(ticket_in: TicketCreate, token: str = Depends(oauth2_scheme_ge
     elif actor["role"] == "admin":
         t = models.Ticket(
             hospital_id=ticket_in.hospital_id,
-            type=ticket_in.type,
-            details=ticket_in.details,
-            payload=ticket_in.payload,
+            type=t_type,
+            details=ticket_in.description or ticket_in.type,
+            description=ticket_in.description,
+            count=ticket_in.count,
+            payload=ticket_in.__dict__.get("payload"),
             status="open",
             assigned_admin=ticket_in.assigned_admin,
             last_updated_by_admin=actor["id"]
@@ -175,10 +195,6 @@ def create_ticket(ticket_in: TicketCreate, token: str = Depends(oauth2_scheme_ge
 def update_ticket(ticket_id: int, upd: TicketUpdate, token: str = Depends(oauth2_scheme_generic), db: Session = Depends(get_db)):
     """
     Update or close a ticket.
-    - hospital can update tickets belonging to their hospital; hospital's updates set last_updated_by_hospital
-      and if hospital sets status to 'closed' then closed_by_hospital and closed_at are set.
-    - admin can update any ticket; admin updates set last_updated_by_admin and if admin sets status to 'resolved' or 'closed'
-      closed_by_admin and closed_at are set.
     """
     actor = get_actor_from_token(token, db)
     t = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
@@ -195,8 +211,14 @@ def update_ticket(ticket_id: int, upd: TicketUpdate, token: str = Depends(oauth2
     if upd.details is not None:
         t.details = upd.details
         changed = True
+    if upd.description is not None:
+        t.description = upd.description
+        changed = True
+    if getattr(upd, "count", None) is not None:
+        t.count = upd.count
+        changed = True
     if upd.payload is not None:
-        # Merge or replace policy: replace payload (simpler). Frontend can send merged object if desired.
+        # Merge or replace policy: replace payload (simpler).
         t.payload = upd.payload
         changed = True
     if upd.assigned_admin is not None:
@@ -220,16 +242,22 @@ def update_ticket(ticket_id: int, upd: TicketUpdate, token: str = Depends(oauth2
     elif actor["role"] == "hospital":
         t.last_updated_by_hospital = actor["id"]
 
-    # if a note is provided, attempt to store it in payload.notes (list)
+    # if a note is provided, attempt to store it in payload.notes (list) or append to description
     if upd.note:
-        payload = t.payload or {}
-        notes = payload.get("notes") if isinstance(payload, dict) else None
-        if not isinstance(notes, list):
-            notes = []
-        notes.append({"by": actor["role"], "by_id": actor["id"], "note": upd.note, "at": datetime.utcnow().isoformat()})
-        payload = dict(payload) if isinstance(payload, dict) else {}
-        payload["notes"] = notes
-        t.payload = payload
+        # try to add to payload.notes if payload is dict, otherwise append to description
+        payload_val = t.payload or {}
+        if isinstance(payload_val, dict):
+            notes = payload_val.get("notes")
+            if not isinstance(notes, list):
+                notes = []
+            notes.append({"by": actor["role"], "by_id": actor["id"], "note": upd.note, "at": datetime.utcnow().isoformat()})
+            payload_val["notes"] = notes
+            t.payload = payload_val
+        else:
+            # append to description
+            existing = t.description or t.details or ""
+            suffix = f"\n[{actor['role']}] {upd.note}"
+            t.description = (existing + suffix).strip()
         changed = True
 
     if changed:
@@ -529,21 +557,33 @@ def hospital_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
 # Legacy wrapper endpoints kept for compatibility (they now call the central ticket endpoints)
 @router.post("/hospital/requests")
 def create_hospital_request(payload: TicketCreate, hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):
-    # alias for POST /tickets by hospital
-    token = None
-    # we can call create_ticket via internal logic instead of making HTTP call
-    t = models.Ticket(
-        hospital_id=hospital.id,
-        type=payload.type,
-        details=payload.details,
-        payload=payload.payload,
-        status="open",
-        last_updated_by_hospital=hospital.id
-    )
-    db.add(t)
-    db.commit()
-    db.refresh(t)
-    return {"msg": "Request created", "request_id": t.id}
+    """
+    Create hospital ticket using simplified fields (type, count, description).
+    Accepts both 'type' and legacy 'request_type' if clients used it.
+    """
+    # Normalize type and create ticket
+    t_type = normalize_ticket_type(payload.type or "")
+    try:
+        t = models.Ticket(
+            hospital_id=hospital.id,
+            type=t_type,
+            details=payload.description or payload.type,
+            description=payload.description,
+            count=payload.count,
+            payload=payload.__dict__.get("payload"),
+            status="open",
+            last_updated_by_hospital=hospital.id
+        )
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        return {"msg": "Request created", "request_id": t.id, "ticket": {
+            "id": t.id, "type": t.type, "count": t.count, "description": t.description, "status": t.status
+        }}
+    except Exception as e:
+        db.rollback()
+        logger.exception("create_hospital_request failed")
+        raise HTTPException(status_code=500, detail="Failed to create request")
 
 @router.get("/hospital/requests")
 def list_hospital_requests(hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):

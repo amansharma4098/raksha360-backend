@@ -177,9 +177,20 @@ class Ticket(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     hospital_id = Column(Integer, ForeignKey("hospitals.id"), nullable=True, index=True)  # which hospital this ticket belongs to
+
+    # Keep 'type' column (string) to represent category/name (will be normalized)
     type = Column(String, nullable=False)           # e.g. get_staff, get_pro, onboard_hospital
-    details = Column(Text, nullable=True)           # human readable details
-    payload = Column(JSON, nullable=True)           # structured JSON payload
+
+    # Human readable detail + new explicit description
+    details = Column(Text, nullable=True)           # legacy text field
+    description = Column(Text, nullable=True)       # preferred new field for simple tickets
+
+    # explicit count column (number requested)
+    count = Column(Integer, nullable=True)
+
+    # keep payload for backward compatibility (optional JSON)
+    payload = Column(JSON, nullable=True)           # structured JSON payload (legacy)
+
     status = Column(String, nullable=False, default="open")   # open / in_progress / resolved / rejected / closed
     assigned_admin = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
 

@@ -75,33 +75,36 @@ class HospitalRegisterRequest(BaseModel):
 # ---------------- Ticket schemas (single ticket table) ----------------
 class TicketCreate(BaseModel):
     """
-    Create a ticket.
-      - hospital users: ignore hospital_id in request; hospital_id will be set from token.
-      - admin users: may specify hospital_id to create ticket for a hospital (optional).
+    Create a ticket with simplified fields:
+      - type (category, e.g. "pros" or "staff")
+      - count (integer)
+      - description (human readable)
     """
     type: str
-    details: Optional[str] = None
-    payload: Optional[Dict[str, Any]] = None
+    count: Optional[int] = None
+    description: Optional[str] = None
     hospital_id: Optional[int] = None  # admin-only - ignored for hospital token
     assigned_admin: Optional[int] = None
 
 class TicketUpdate(BaseModel):
     """
     Update a ticket. Fields are optional.
-    - status: e.g. open, in_progress, resolved, rejected, closed
-    - details/payload can be edited; we track who made the update automatically.
     """
     details: Optional[str] = None
     payload: Optional[Dict[str, Any]] = None
+    count: Optional[int] = None
+    description: Optional[str] = None
     status: Optional[str] = None
     assigned_admin: Optional[int] = None
-    note: Optional[str] = None  # optional human note (will be stored inside payload.notes or ignored if you prefer)
+    note: Optional[str] = None  # optional human note (will be stored inside payload.notes or description)
 
 class TicketOut(BaseModel):
     id: int
     hospital_id: Optional[int]
     type: str
     details: Optional[str]
+    description: Optional[str]
+    count: Optional[int]
     payload: Optional[Dict[str, Any]]
     status: str
     assigned_admin: Optional[int]
