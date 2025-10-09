@@ -116,3 +116,11 @@ class TicketOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+
+class AdminSignupRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    invite_code: str | None = None  # optional, only if you want invite-based signup

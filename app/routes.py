@@ -9,12 +9,13 @@ import traceback
 import logging
 import sys
 
+import os
 from app.database import SessionLocal, Base, engine, get_db
 from app import models
 from app.schemas import (
     DoctorSignupRequest, PatientSignupRequest, LoginRequest,
     AppointmentRequest, PrescriptionCreate, PrescriptionOut,
-    HospitalRegisterRequest, TicketCreate, TicketUpdate, TicketOut
+    HospitalRegisterRequest, TicketCreate, TicketUpdate, TicketOut, AdminSignupRequest
 )
 from app.auth import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 from .langchain_agent import call_langchain_agent
@@ -672,3 +673,49 @@ def admin_create_hospital(h: HospitalRegisterRequest, current_admin: models.Admi
     db.commit()
     db.refresh(new)
     return {"msg": "Hospital created", "hospital_id": new.id}
+
+
+
+
+@router.post("/auth/admin/signup", status_code=201)
+def admin_signup(payload: AdminSignupRequest, db: Session = Depends(get_db)):
+    """
+    Admin signup. Safety checks:
+      - If an admin already exists and INVITE_CODE not configured / not provided, reject.
+      - If INVITE_CODE environment variable is set, require it (payload.invite_code must match).
+    """
+    # basic duplicate check
+    if db.query(models.AdminUser).filter(models.AdminUser.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Admin already exists")
+
+    # safety: allow open signup only when no admin exists OR when invite code matches
+    existing_admin_count = db.query(models.AdminUser).count()
+    invite_code_env = os.getenv("ADMIN_INVITE_CODE")  # set in env for production
+    # if there are admins and no invite code provided/matched -> forbid
+    if existing_admin_count > 0:
+        if invite_code_env:
+            if not payload.invite_code or payload.invite_code != invite_code_env:
+                raise HTTPException(status_code=403, detail="Invite code required to create additional admins")
+        else:
+            # no invite code configured -> forbid open creation once admins exist
+            raise HTTPException(status_code=403, detail="Admin signup disabled")
+
+    try:
+        hashed = hash_password(payload.password)
+        admin = models.AdminUser(
+            name=payload.name,
+            email=payload.email,
+            password_hash=hashed,
+            # add other admin fields if model requires them
+        )
+        db.add(admin)
+        db.commit()
+        db.refresh(admin)
+
+        # create token and return same shape as login
+        token = create_access_token({"sub": admin.email, "role": "admin", "id": admin.id})
+        return {"token": token, "admin_id": admin.id, "name": admin.name}
+    except Exception as e:
+        db.rollback()
+        logger.exception("admin_signup failed")
+        raise HTTPException(status_code=500, detail="Failed to create admin")
