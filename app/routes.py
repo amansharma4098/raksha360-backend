@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 import traceback
 import logging
 import sys
-
 import os
+
 from app.database import SessionLocal, Base, engine, get_db
 from app import models
 from app.schemas import (
@@ -593,7 +593,8 @@ def list_hospital_requests(hospital: models.Hospital = Depends(get_current_hospi
 @router.get("/hospital/dashboard")
 def hospital_dashboard(hospital: models.Hospital = Depends(get_current_hospital), db: Session = Depends(get_db)):
     staff_count = db.query(models.Staff).filter(models.Staff.hospital_id == hospital.id).count() if hasattr(models, "Staff") else 0
-    doctor_count = db.query(models.Doctor).filter(models.Doctor.hospital_id == hospital.id).count() if hasattr(models, "Doctor") else 0
+    # No relationship between Doctor and Hospital — return global doctor count (or 0 if model absent)
+    doctor_count = db.query(models.Doctor).count() if hasattr(models, "Doctor") else 0
     pro_count = db.query(models.Pro).filter(models.Pro.hospital_id == hospital.id).count() if hasattr(models, "Pro") else 0
     ticket_count = db.query(models.Ticket).filter(models.Ticket.hospital_id == hospital.id).count()
     return {"staff_count": staff_count, "doctor_count": doctor_count, "pro_count": pro_count, "ticket_count": ticket_count}
@@ -673,8 +674,6 @@ def admin_create_hospital(h: HospitalRegisterRequest, current_admin: models.Admi
     db.commit()
     db.refresh(new)
     return {"msg": "Hospital created", "hospital_id": new.id}
-
-
 
 
 @router.post("/auth/admin/signup", status_code=201)
